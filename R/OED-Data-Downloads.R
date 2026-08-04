@@ -399,23 +399,32 @@ data_select_catalog <- function(catalog, Category = NULL, Geographies = NULL) {
 
 data_url_absolute <- function(href, base_url) {
   href <- stringr::str_squish(as.character(href))
+  href <- data_html_decode(href)
 
-  if (str_detect(href, "^https?://")) {
-    return(href)
+  if (stringr::str_detect(href, "^https?://")) {
+    url <- href
+  } else if (stringr::str_starts(href, "//")) {
+    url <- paste0("https:", href)
+  } else {
+    base_root <- stringr::str_match(
+      base_url,
+      "^(https?://[^/]+)"
+    )[, 2]
+
+    if (stringr::str_starts(href, "/")) {
+      url <- paste0(base_root, href)
+    } else {
+      base_dir <- stringr::str_replace(
+        base_url,
+        "/[^/]*$",
+        "/"
+      )
+
+      url <- paste0(base_dir, href)
+    }
   }
 
-  if (stringr::str_starts(href, "//")) {
-    return(paste0("https:", href))
-  }
-
-  base_root <- stringr::str_match(base_url, "^(https?://[^/]+)")[, 2]
-
-  if (stringr::str_starts(href, "/")) {
-    return(paste0(base_root, href))
-  }
-
-  base_dir <- stringr::str_replace(base_url, "/[^/]*$", "/")
-  paste0(base_dir, href)
+  unname(gsub(" ", "%20", url, fixed = TRUE))
 }
 
 data_extract_links <- function(html, base_url) {
