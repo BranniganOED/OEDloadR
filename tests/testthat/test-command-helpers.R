@@ -94,3 +94,25 @@ testthat::test_that("download diagnostics have a common shape", {
   testthat::expect_equal(diagnostics$files_downloaded, 1)
   testthat::expect_equal(diagnostics$files_reused, 1)
 })
+
+testthat::test_that("QualityInfo URLs encode spaces", {
+  href <- paste0(
+    "/documents/20118/37537/",
+    "Portland Tri-County Industry Projections 2024-2034/",
+    "8dd44f95-dd35-5255-0e17-86b562938864?version=1.0"
+  )
+
+  url <- OEDloadR:::data_url_absolute(
+    href,
+    "https://www.qualityinfo.org/data"
+  )
+
+  expected <- paste0(
+    "https://www.qualityinfo.org/documents/20118/37537/",
+    "Portland%20Tri-County%20Industry%20Projections%202024-2034/",
+    "8dd44f95-dd35-5255-0e17-86b562938864?version=1.0"
+  )
+
+  testthat::expect_equal(url, expected)
+  testthat::expect_false(grepl(" ", url, fixed = TRUE))
+})
