@@ -1,0 +1,45 @@
+# NAMESPACE for OEDloadR
+
+export(OED_QCEW_Table)
+export(OED_Data)
+export(OED_IProfile)
+export(OED_Businesses)
+export(OED_Diagnostics)
+export(OED_LAUS_Table)
+export(OED_QCEW_Options)
+export(OED_LAUS_Options)
+
+importFrom(dplyr,
+  across,
+  arrange,
+  bind_rows,
+  filter,
+  if_else,
+  mutate
+)
+
+importFrom(httr2,
+  req_headers,
+  req_options,
+  req_perform,
+  req_url_query,
+  req_user_agent,
+  request
+)
+
+importFrom(readxl,
+  excel_sheets,
+  read_excel
+)
+
+importFrom(rlang,
+  .data,
+  .env
+)
+
+importFrom(stringr,
+  str_detect,
+  str_replace_all,
+  str_trim
+)
+

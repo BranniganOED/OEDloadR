@@ -1,0 +1,34 @@
+Package: OEDloadR
+Type: Package
+Title: Download and Read Oregon Employment Department QualityInfo Data
+Version: 0.1.0
+Authors@R: c(
+    person(
+      "Brannigan", "Vogt",
+      email = "brannigan.t.vogt@employ.oregon.gov",
+      role = c("aut", "cre")
+    ),
+    person(
+      "Oregon Employment Department",
+      role = "cph"
+    )
+  )
+Description: Download, read, and standardize Oregon Employment Department
+    QualityInfo workbooks for use in analysis and reporting. The package
+    provides web-first download and parsing functions for public use.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+Imports:
+    dplyr,
+    httr2,
+    jsonlite,
+    readxl,
+    rlang,
+    stringr,
+    tibble,
+    tidyr
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
