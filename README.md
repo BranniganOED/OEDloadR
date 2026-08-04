@@ -1,31 +1,31 @@
 # OEDloadR
 
-OEDloadR downloads, reads, and standardizes Oregon Employment Department data
-from [QualityInfo.org](https://www.qualityinfo.org/). It uses QualityInfo's
-public services and Excel workbooks, including Oregon statewide, county, and
-Oregon-region data.
+OEDloadR downloads, reads, and standardizes Oregon Employment Department Workforce and Economic Research Division data
+from [QualityInfo.org](https://www.qualityinfo.org/).
 
-The command families are designed to be predictable for interactive use:
+# Basic Usage
 
-- `OED_QCEW_Table()` — Quarterly Census of Employment and Wages
-- `OED_LAUS_Table()` — Local Area Unemployment Statistics
-- `OED_Data()` — public QualityInfo workbook catalog
-- `OED_IProfile()` — Industry Profile workbooks
-- `OED_Businesses()` — Business List workbooks
+Commands:
+
+- `OED_QCEW_Table()` — Quarterly Census of Employment and Wages (QCEW) workbooks from QualityInfo.org/ewind
+- `OED_LAUS_Table()` — Local Area Unemployment Statistics (CES) workbooks from QualityInfo.org/uesti
+- `OED_IProfile()` — Industry Profile workbooks from QualityInfo.org/lipro
+- `OED_Businesses()` — Business List workbooks from QualityInfo.org/blist
+- `OED_Data()` — Variety of workbooks from QualityInfo.org/data
+
 
 ## Quick start
 
 ```r
 library(OEDloadR)
 
-# The default is a small Oregon statewide QCEW request.
+# The OED_QCEW_Table() command defaults to pulling the latest annual statewide QCEW data.
 qcew <- OED_QCEW_Table()
 
-laus <- OED_LAUS_Table(
-  Geographies = "Washington County"
-)
+# The OED_LAUS_Table() command defaults to pulling the latest year's monthly statewide LAUS data. (Note: currently plan to change the defaults to either the entire monthly history of Oregon from Jan 2000 to latest month including all four LAUS variables as well as the annual average data, or to defaulting to the entire January 2000 to latest month data series for all geographies)
+laus <- OED_LAUS_Table()
 
-# Select a category and Oregon region from the public /data catalog.
+# Select a category and Oregon region from the public /data catalog. (Note: OED_Data() is currently very buggy, in its development stage)
 projections <- OED_Data(
   Category = "industry projections",
   Geographies = "Portland Tri-County"
@@ -66,11 +66,3 @@ Downloaded results include a `download_plan` attribute and a
 and failed files. Use `OED_Diagnostics(result)` for the summary without
 accessing attributes directly. QCEW results also retain `failed_requests` and
 `naics_availability` attributes when applicable.
-
-## QualityInfo-specific behavior
-
-OEDloadR keeps QualityInfo's backend and data model: live portlet endpoints,
-QualityInfo service lookups, Excel workbook parsing, Oregon geography names and
-codes, suppression markers, provisional flags, and Oregon-specific workbook
-structures. It does not require BLS series IDs or BLS flat files.
-
