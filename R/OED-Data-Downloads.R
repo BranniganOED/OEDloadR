@@ -531,7 +531,11 @@ data_destination_path <- function(file_title, DownloadDir) {
 # caller explicitly supplies a different DataUrl.
 data_static_catalog <- function() {
   catalog <- oed_data_catalog()
-  urls <- oed_static_data_urls()
+  
+  urls <- oed_static_data_urls() |>
+  dplyr::mutate(
+    download_url = gsub(" ", "%20", download_url, fixed = TRUE)
+  )
 
   catalog |>
     dplyr::left_join(
