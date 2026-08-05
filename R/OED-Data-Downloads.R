@@ -19,11 +19,20 @@ data_clean_names <- function(x) {
     as.character() |>
     stringr::str_squish() |>
     stringr::str_to_lower() |>
-    str_replace_all("[^a-z0-9]+", "_") |>
-    str_replace_all("^_|_$", "")
+    stringr::str_replace_all(
+      stringr::regex("^%\\s*change$|^percent\\s*change$"),
+      "change_pct"
+    ) |>
+    stringr::str_replace_all("%", "pct") |>
+    stringr::str_replace_all("[^a-z0-9]+", "_") |>
+    stringr::str_replace_all("^_|_$", "")
 
   blank_names <- !nzchar(names) | is.na(names)
-  names[blank_names] <- paste0("blank_", seq_len(sum(blank_names)))
+  names[blank_names] <- paste0(
+    "blank_",
+    seq_len(sum(blank_names))
+  )
+
   make.unique(names, sep = "_")
 }
 
