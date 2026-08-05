@@ -6,9 +6,9 @@
 \alias{OED_Diagnostics}
 \title{Discover QualityInfo Options}
 \description{
-Return current QualityInfo geography, year, and filter choices used by the
-QCEW and LAUS command families. The helpers query QualityInfo services rather
-than reproducing static lists in the package.
+Return the bundled QualityInfo geography, year, and filter choices used by the
+QCEW and LAUS command families. The standard helpers are offline so they do
+not add discovery requests to a data download.
 }
 \usage{
 OED_QCEW_Options()
@@ -18,8 +18,8 @@ OED_LAUS_Options(PageUrl = "https://www.qualityinfo.org/uesti")
 OED_Diagnostics(x)
 }
 \arguments{
-\item{PageUrl}{QualityInfo LAUS page used to discover the live report and
-service endpoints.}
+\item{PageUrl}{QualityInfo LAUS page. The standard page uses bundled endpoint
+and lookup metadata; a custom page uses the dynamic maintenance fallback.}
 \item{x}{A result returned by one of the OEDloadR download commands.}
 }
 \value{
