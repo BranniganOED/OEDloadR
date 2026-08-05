@@ -1,9 +1,10 @@
 # Shared helpers for QualityInfo's static workbook catalogs and downloads.
 #
-# OED_Data selects workbooks from the public /data page, downloads them with
-# caching and overwrite controls, and optionally performs generic spreadsheet
-# cleanup. OED_IProfile and OED_Businesses reuse the same workflow for pages
-# that expose direct workbook links.
+# OED_Data selects workbooks from a bundled QualityInfo catalog, downloads them
+# with caching and refresh controls, and optionally performs generic
+# spreadsheet cleanup. OED_IProfile and OED_Businesses reuse the same local
+# file/explicit-URL workflow because their web pages are interactive reports,
+# not stable lists of direct workbook links.
 
 data_or <- function(x, y) {
   if (is.null(x) || length(x) == 0) {
@@ -27,17 +28,33 @@ data_clean_names <- function(x) {
 }
 
 data_is_xlsx <- function(path) {
-  if (!file.exists(path) || file.info(path)$size < 4) {
-    return(FALSE)
-  }
-
-  identical(readBin(path, what = "raw", n = 2), charToRaw("PK"))
+  oed_xlsx_valid(path)
 }
 
 # QualityInfo occasionally responds slowly or transiently with a server error.
 # Retry idempotent page, service, and workbook requests a small number of times
 # while leaving the source-specific request construction to each loader.
 oed_request_perform <- function(req, path = NULL, max_tries = 3L) {
+  custom_perform <- getOption("OEDloadR.http_perform", NULL)
+  if (is.function(custom_perform)) {
+    last_error <- NULL
+    for (attempt in seq_len(max_tries)) {
+      attempt_error <- NULL
+      result <- tryCatch(
+        custom_perform(req, path = path, attempt = attempt),
+        error = function(error) {
+          attempt_error <<- error
+          NULL
+        }
+      )
+      if (!is.null(result) || is.null(attempt_error)) {
+        return(result)
+      }
+      last_error <- attempt_error
+    }
+    stop(last_error)
+  }
+
   req <- httr2::req_retry(req, max_tries = max_tries)
 
   if (is.null(path)) {
@@ -58,8 +75,17 @@ oed_download_diagnostics <- function(command, plan, failed_requests = NULL) {
     command = command,
     files_requested = nrow(plan),
     files_downloaded = sum(status == "downloaded", na.rm = TRUE),
+    files_refreshed = sum(status == "refreshed", na.rm = TRUE),
     files_reused = sum(status == "cached", na.rm = TRUE),
-    files_failed = if (is.null(failed_requests)) 0L else nrow(failed_requests),
+    files_stale_cache_used = sum(status == "stale_cache_used", na.rm = TRUE),
+    files_failed = max(
+      sum(status == "failed", na.rm = TRUE),
+      if (is.null(failed_requests)) 0L else nrow(failed_requests)
+    ),
+    cache_age_days = if ("cache_age_days" %in% names(plan)) plan$cache_age_days else NULL,
+    cache_max_age_days = if ("cache_max_age_days" %in% names(plan)) plan$cache_max_age_days else NULL,
+    refresh_reasons = if ("refresh_reason" %in% names(plan)) plan$refresh_reason else NULL,
+    metadata_paths = if ("metadata_path" %in% names(plan)) plan$metadata_path else NULL,
     failed_requests = failed_requests,
     generated_at = Sys.time()
   )
@@ -231,15 +257,15 @@ oed_data_projection_titles <- function() {
       "Southwestern Oregon High-Wage, High-Demand, High-Skill Occupations 2024-2034"
     ),
     stem_title = c(
-      "Oregon STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "East Cascades STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Eastern Oregon STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Lane STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Mid-Valley STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Northwest STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Portland Tri-County STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Rogue Valley STEM Employment Projections and Wages by Detailed Occupation 2023-2033",
-      "Southwestern Oregon STEM Employment Projections and Wages by Detailed Occupation 2023-2033"
+      "Oregon STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "East Cascades STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Eastern Oregon STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Lane STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Mid-Valley STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Northwest STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Portland Tri-County STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Rogue Valley STEM Employment Projections and Wages by Detailed Occupation 2024-2034",
+      "Southwestern Oregon STEM Employment Projections and Wages by Detailed Occupation 2024-2034"
     )
   )
 }
@@ -263,7 +289,7 @@ oed_data_catalog <- function() {
   )
   wage_titles <- tibble::tibble(
     geography = wage_geographies,
-    file_title = paste0(wage_geographies, " Wage Information")
+    file_title = paste0(wage_geographies, " Occupational Wage Information")
   )
 
   bind_rows(
@@ -500,41 +526,164 @@ data_destination_path <- function(file_title, DownloadDir) {
   file.path(DownloadDir, data_safe_filename(file_title))
 }
 
-data_download_one <- function(download_url, destination_path, Overwrite = FALSE, DataUrl = "https://www.qualityinfo.org/data") {
-  dir.create(dirname(destination_path), recursive = TRUE, showWarnings = FALSE)
+# The normal data catalog is static-first. URLs are bundled from the current
+# QualityInfo document IDs; the page scraper remains available only when a
+# caller explicitly supplies a different DataUrl.
+data_static_catalog <- function() {
+  catalog <- oed_data_catalog()
+  urls <- oed_static_data_urls()
 
-  if (file.exists(destination_path) && !isTRUE(Overwrite)) {
-    if (!data_is_xlsx(destination_path)) {
-      stop(
-        "Existing file is not an xlsx workbook: ", destination_path,
-        ". Remove it or set Overwrite = TRUE.",
-        call. = FALSE
-      )
-    }
-
-    return(destination_path)
-  }
-
-  if (file.exists(destination_path) && isTRUE(Overwrite)) {
-    unlink(destination_path)
-  }
-
-  request(download_url) |>
-    req_headers(
-      Referer = DataUrl,
-      Accept = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*"
+  catalog |>
+    dplyr::left_join(
+      urls |>
+        dplyr::select(.data$file_title_key, .data$download_url),
+      by = "file_title_key"
     ) |>
-    req_user_agent("Mozilla/5.0") |>
-    oed_request_perform(path = destination_path)
+    dplyr::mutate(data_link_label = .data$file_title)
+}
 
-  if (!data_is_xlsx(destination_path)) {
+data_prepare_download_plan <- function(selected,
+                                       Command,
+                                       Dataset,
+                                       Refresh = "auto",
+                                       Overwrite = FALSE,
+                                       MaxAge = NULL) {
+  selected$download_status <- "downloaded"
+  selected$refresh_reason <- NA_character_
+  selected$cache_age_days <- NA_real_
+  selected$cache_max_age_days <- NA_real_
+  selected$metadata_path <- vapply(
+    selected$destination_path,
+    oed_cache_sidecar_path,
+    character(1)
+  )
+
+  for (i in seq_len(nrow(selected))) {
+    decision <- oed_cache_decision(
+      path = selected$destination_path[i],
+      command = Command,
+      dataset = Dataset,
+      source_url = selected$download_url[i],
+      request_parameters = as.list(selected[i, , drop = FALSE]),
+      Refresh = Refresh,
+      Overwrite = Overwrite,
+      MaxAge = MaxAge,
+      # Revision headers are recorded when a workbook is downloaded. They
+      # are not probed here because a valid cache hit must remain offline.
+      current_etag = NULL,
+      current_last_modified = NULL,
+      catalog_title = selected$file_title[i],
+      catalog_url = selected$download_url[i],
+      validator = data_is_xlsx
+    )
+    selected$download_status[i] <- decision$status
+    selected$refresh_reason[i] <- decision$reason
+    selected$cache_age_days[i] <- decision$cache_age_days
+    selected$cache_max_age_days[i] <- decision$max_age_days
+    selected$metadata_path[i] <- decision$metadata_path
+  }
+  oed_cache_plan_columns(selected)
+}
+
+data_execute_download_plan <- function(selected,
+                                       Command,
+                                       Dataset,
+                                       Refresh = "auto",
+                                       Overwrite = FALSE,
+                                       MaxAge = NULL,
+                                       DataUrl,
+                                       MaxDownloads = 10) {
+  needs_download <- selected$download_status == "downloaded"
+  if (is.finite(MaxDownloads) && sum(needs_download) > MaxDownloads) {
     stop(
-      "QualityInfo did not return an xlsx workbook for: ", download_url,
+      Command, " would download ", sum(needs_download),
+      " QualityInfo Excel files. Narrow the request, set PreviewOnly = TRUE, ",
+      "or raise the download limit.",
       call. = FALSE
     )
   }
 
-  destination_path
+  paths <- selected$destination_path
+  failed_requests <- tibble::tibble(
+    file_title = character(),
+    download_url = character(),
+    reason = character()
+  )
+  for (i in which(needs_download)) {
+    planned_reason <- selected$refresh_reason[i]
+    outcome <- data_download_one(
+      download_url = selected$download_url[i],
+      destination_path = selected$destination_path[i],
+      Overwrite = Overwrite,
+      DataUrl = DataUrl,
+      Command = Command,
+      Dataset = Dataset,
+      # The planning pass already established that this file needs a
+      # download. Force the second pass to avoid losing an ETag/catalog
+      # decision when the request is executed.
+      Refresh = "always",
+      MaxAge = MaxAge,
+      RequestParameters = as.list(selected[i, , drop = FALSE]),
+      CatalogTitle = selected$file_title[i],
+      CatalogUrl = selected$download_url[i]
+    )
+    selected$download_status[i] <- outcome$status
+    selected$refresh_reason[i] <- if (outcome$status %in% c("downloaded", "refreshed")) {
+      planned_reason
+    } else {
+      outcome$reason
+    }
+    selected$cache_age_days[i] <- outcome$cache_age_days
+    selected$cache_max_age_days[i] <- outcome$max_age_days
+    selected$metadata_path[i] <- outcome$metadata_path
+    if (identical(outcome$status, "failed")) {
+      paths[i] <- NA_character_
+      failed_requests <- bind_rows(
+        failed_requests,
+        tibble::tibble(
+          file_title = selected$file_title[i],
+          download_url = selected$download_url[i],
+          reason = outcome$error
+        )
+      )
+    } else {
+      paths[i] <- outcome$path
+    }
+  }
+  list(
+    plan = oed_cache_plan_columns(dplyr::mutate(selected, path = paths)),
+    failed_requests = failed_requests
+  )
+}
+
+data_download_one <- function(download_url,
+                              destination_path,
+                              Overwrite = FALSE,
+                              DataUrl = "https://www.qualityinfo.org/data",
+                              Command = "OED_Data",
+                              Dataset = "Data",
+                              Refresh = "auto",
+                              MaxAge = NULL,
+                              RequestParameters = NULL,
+                              LatestAvailablePeriod = NULL,
+                              CatalogTitle = NULL,
+                              CatalogUrl = NULL) {
+  oed_cache_download(
+    request = httr2::request(download_url),
+    destination_path = destination_path,
+    command = Command,
+    dataset = Dataset,
+    source_url = download_url,
+    request_parameters = RequestParameters,
+    Refresh = Refresh,
+    Overwrite = Overwrite,
+    MaxAge = MaxAge,
+    latest_available_period = LatestAvailablePeriod,
+    catalog_title = CatalogTitle,
+    catalog_url = CatalogUrl,
+    validator = data_is_xlsx,
+    DataUrl = DataUrl
+  )
 }
 
 # Generic workbook cleaning starts by locating the first dense header area.
@@ -749,7 +898,7 @@ data_read_workbooks <- function(Paths, Sheets = NULL, Clean = TRUE, file_catalog
 
 OED_Data <- function(Category = NULL,
                      Geographies = NULL,
-                     DownloadDir = file.path("output", "qualityinfo_data"),
+                     DownloadDir = NULL,
                      Overwrite = FALSE,
                      Read = TRUE,
                      Clean = TRUE,
@@ -758,7 +907,11 @@ OED_Data <- function(Category = NULL,
                      MaxDownloads = 10,
                      Paths = NULL,
                      Sheets = NULL,
-                     DataUrl = "https://www.qualityinfo.org/data") {
+                     DataUrl = "https://www.qualityinfo.org/data",
+                     Refresh = c("auto", "always", "never"),
+                     MaxAge = NULL) {
+  Refresh <- oed_refresh_policy(Refresh, Overwrite = Overwrite)
+  DownloadDir <- oed_dataset_download_dir("Data", DownloadDir)
   if (isTRUE(List)) {
     return(data_select_catalog(oed_data_catalog(), Category = Category, Geographies = Geographies))
   }
@@ -774,7 +927,20 @@ OED_Data <- function(Category = NULL,
     return(data_read_workbooks(Paths, Sheets = Sheets, Clean = Clean))
   }
 
-  selected <- data_page_catalog(DataUrl) |>
+  if (!identical(DataUrl, "https://www.qualityinfo.org/data") && isTRUE(PreviewOnly)) {
+    stop(
+      "PreviewOnly cannot discover a custom OED_Data catalog. Use the default " ,
+      "DataUrl or supply Paths.",
+      call. = FALSE
+    )
+  }
+
+  selected_catalog <- if (identical(DataUrl, "https://www.qualityinfo.org/data")) {
+    data_static_catalog()
+  } else {
+    data_page_catalog(DataUrl)
+  }
+  selected <- selected_catalog |>
     data_select_catalog(Category = Category, Geographies = Geographies)
 
   missing_links <- selected |>
@@ -797,53 +963,56 @@ OED_Data <- function(Category = NULL,
       character(1),
       DownloadDir = DownloadDir
     ))
-  selected$download_status <- ifelse(
-    file.exists(selected$destination_path) && !isTRUE(Overwrite),
-    "cached",
-    "downloaded"
+  selected <- data_prepare_download_plan(
+    selected,
+    Command = "OED_Data",
+    Dataset = "Data",
+    Refresh = Refresh,
+    Overwrite = Overwrite,
+    MaxAge = MaxAge
   )
 
   if (isTRUE(PreviewOnly)) {
     return(selected)
   }
 
-  if (is.finite(MaxDownloads) && nrow(selected) > MaxDownloads) {
-    stop(
-      "This call would download ", nrow(selected), " QualityInfo Excel files. ",
-      "Narrow Category or Geographies, set PreviewOnly = TRUE, or raise MaxDownloads.",
-      call. = FALSE
-    )
-  }
-
-  paths <- character(nrow(selected))
-  for (i in seq_len(nrow(selected))) {
-    paths[i] <- data_download_one(
-      download_url = selected$download_url[i],
-      destination_path = selected$destination_path[i],
-      Overwrite = Overwrite,
-      DataUrl = DataUrl
-    )
-  }
-  downloaded <- mutate(selected, path = paths)
+  executed <- data_execute_download_plan(
+    selected,
+    Command = "OED_Data",
+    Dataset = "Data",
+    Refresh = Refresh,
+    Overwrite = Overwrite,
+    MaxAge = MaxAge,
+    DataUrl = DataUrl,
+    MaxDownloads = MaxDownloads
+  )
+  downloaded <- executed$plan
 
   if (!isTRUE(Read)) {
     return(oed_attach_download_diagnostics(
       downloaded,
       command = "OED_Data",
-      plan = downloaded
+      plan = downloaded,
+      failed_requests = executed$failed_requests
     ))
   }
 
+  readable <- downloaded |>
+    filter(!is.na(.data$path), file.exists(.data$path))
+  if (nrow(readable) == 0) {
+    stop("No valid OED_Data workbooks were available after download attempts.", call. = FALSE)
+  }
   result <- data_read_workbooks(
-    Paths = downloaded$path,
+    Paths = readable$path,
     Sheets = Sheets,
     Clean = Clean,
-    file_catalog = downloaded
+    file_catalog = readable
   )
   oed_attach_download_diagnostics(
     result,
     command = "OED_Data",
-    plan = downloaded
+    plan = downloaded,
+    failed_requests = executed$failed_requests
   )
 }
 
@@ -882,46 +1051,12 @@ data_page_workbook_catalog <- function(PageUrl, Urls = NULL) {
     ))
   }
 
-  html <- request(PageUrl) |>
-    req_user_agent("Mozilla/5.0") |>
-    oed_request_perform() |>
-    httr2::resp_body_string()
-
-  links <- data_extract_links(html, PageUrl)
-  keep <- stringr::str_detect(
-    links$download_url,
-    stringr::regex("\\.xlsx(?:[?#].*)?$|getReportXlsx", ignore_case = TRUE)
-  ) | stringr::str_detect(
-    links$data_link_label,
-    stringr::regex("\\.xlsx$|download.*excel|excel.*download", ignore_case = TRUE)
+  stop(
+    PageUrl, " is an interactive QualityInfo report page. OEDloadR does " ,
+    "not rediscover its hidden request options during ordinary calls. Supply " ,
+    "explicit workbook Urls or already-downloaded Paths.",
+    call. = FALSE
   )
-  links <- links[keep, , drop = FALSE]
-
-  if (nrow(links) == 0) {
-    stop(
-      "No direct Excel workbook links were found on ", PageUrl, ". ",
-      "The page may use an interactive request rather than static links. ",
-      "Provide already-downloaded Paths or explicit workbook Urls.",
-      call. = FALSE
-    )
-  }
-
-  fallback <- links$download_url |>
-    stringr::str_remove("[?#].*$") |>
-    basename() |>
-    utils::URLdecode() |>
-    tools::file_path_sans_ext()
-  titles <- stringr::str_squish(links$data_link_label)
-  titles[is.na(titles) | !nzchar(titles)] <- fallback[is.na(titles) | !nzchar(titles)]
-  blank <- is.na(titles) | !nzchar(titles)
-  titles[blank] <- paste("QualityInfo workbook", which(blank))
-
-  tibble::tibble(
-    file_title = titles,
-    download_url = links$download_url,
-    data_link_label = links$data_link_label
-  ) |>
-    dplyr::distinct(.data$download_url, .keep_all = TRUE)
 }
 
 # Run the shared page-link workflow used by the static IProfile and Business
@@ -936,7 +1071,12 @@ data_page_workbooks <- function(Command,
                                 Clean = TRUE,
                                 PreviewOnly = FALSE,
                                 MaxDownloads = 10,
-                                Sheets = NULL) {
+                                Sheets = NULL,
+                                Dataset = Command,
+                                Refresh = c("auto", "always", "never"),
+                                MaxAge = NULL) {
+  Refresh <- oed_refresh_policy(Refresh, Overwrite = Overwrite)
+  DownloadDir <- oed_dataset_download_dir(Dataset, DownloadDir)
   if (!is.null(Paths)) {
     return(data_read_workbooks(Paths, Sheets = Sheets, Clean = Clean))
   }
@@ -950,10 +1090,13 @@ data_page_workbooks <- function(Command,
   )
   selected$command <- Command
   selected$page_url <- PageUrl
-  selected$download_status <- ifelse(
-    file.exists(selected$destination_path) && !isTRUE(Overwrite),
-    "cached",
-    "downloaded"
+  selected <- data_prepare_download_plan(
+    selected,
+    Command = Command,
+    Dataset = Dataset,
+    Refresh = Refresh,
+    Overwrite = Overwrite,
+    MaxAge = MaxAge
   )
   selected <- dplyr::relocate(selected, .data$command, .data$page_url)
 
@@ -961,56 +1104,58 @@ data_page_workbooks <- function(Command,
     return(selected)
   }
 
-  if (is.finite(MaxDownloads) && nrow(selected) > MaxDownloads) {
-    stop(
-      Command, " would download ", nrow(selected), " QualityInfo Excel files. ",
-      "Provide fewer Urls, set PreviewOnly = TRUE, or raise MaxDownloads.",
-      call. = FALSE
-    )
-  }
-
-  paths <- character(nrow(selected))
-  for (i in seq_len(nrow(selected))) {
-    paths[i] <- data_download_one(
-      download_url = selected$download_url[i],
-      destination_path = selected$destination_path[i],
-      Overwrite = Overwrite,
-      DataUrl = PageUrl
-    )
-  }
-  downloaded <- dplyr::mutate(selected, path = paths)
+  executed <- data_execute_download_plan(
+    selected,
+    Command = Command,
+    Dataset = Dataset,
+    Refresh = Refresh,
+    Overwrite = Overwrite,
+    MaxAge = MaxAge,
+    DataUrl = PageUrl,
+    MaxDownloads = MaxDownloads
+  )
+  downloaded <- executed$plan
 
   if (!isTRUE(Read)) {
     return(oed_attach_download_diagnostics(
       downloaded,
       command = Command,
-      plan = downloaded
+      plan = downloaded,
+      failed_requests = executed$failed_requests
     ))
   }
 
+  readable <- downloaded |>
+    filter(!is.na(.data$path), file.exists(.data$path))
+  if (nrow(readable) == 0) {
+    stop(Command, " did not produce a valid workbook.", call. = FALSE)
+  }
   result <- data_read_workbooks(
-    Paths = downloaded$path,
+    Paths = readable$path,
     Sheets = Sheets,
     Clean = Clean,
-    file_catalog = downloaded
+    file_catalog = readable
   )
   oed_attach_download_diagnostics(
     result,
     command = Command,
-    plan = downloaded
+    plan = downloaded,
+    failed_requests = executed$failed_requests
   )
 }
 
 OED_IProfile <- function(Paths = NULL,
                          Urls = NULL,
-                         DownloadDir = file.path("output", "qualityinfo_iprofile"),
+                         DownloadDir = NULL,
                          Overwrite = FALSE,
                          Read = TRUE,
                          Clean = TRUE,
                          PreviewOnly = FALSE,
                          MaxDownloads = 10,
                          Sheets = NULL,
-                         PageUrl = "https://www.qualityinfo.org/lipro") {
+                         PageUrl = "https://www.qualityinfo.org/lipro",
+                         Refresh = c("auto", "always", "never"),
+                         MaxAge = NULL) {
   data_page_workbooks(
     Command = "OED_IProfile",
     PageUrl = PageUrl,
@@ -1022,20 +1167,25 @@ OED_IProfile <- function(Paths = NULL,
     Clean = Clean,
     PreviewOnly = PreviewOnly,
     MaxDownloads = MaxDownloads,
-    Sheets = Sheets
+    Sheets = Sheets,
+    Dataset = "Industry Profiles",
+    Refresh = Refresh,
+    MaxAge = MaxAge
   )
 }
 
 OED_Businesses <- function(Paths = NULL,
                            Urls = NULL,
-                           DownloadDir = file.path("output", "qualityinfo_businesses"),
+                           DownloadDir = NULL,
                            Overwrite = FALSE,
                            Read = TRUE,
                            Clean = TRUE,
                            PreviewOnly = FALSE,
                            MaxDownloads = 10,
                            Sheets = NULL,
-                           PageUrl = "https://www.qualityinfo.org/blist") {
+                           PageUrl = "https://www.qualityinfo.org/blist",
+                           Refresh = c("auto", "always", "never"),
+                           MaxAge = NULL) {
   data_page_workbooks(
     Command = "OED_Businesses",
     PageUrl = PageUrl,
@@ -1047,6 +1197,9 @@ OED_Businesses <- function(Paths = NULL,
     Clean = Clean,
     PreviewOnly = PreviewOnly,
     MaxDownloads = MaxDownloads,
-    Sheets = Sheets
+    Sheets = Sheets,
+    Dataset = "Businesses",
+    Refresh = Refresh,
+    MaxAge = MaxAge
   )
 }

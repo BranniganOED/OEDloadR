@@ -13,6 +13,8 @@ Authors@R: c(
       role = "cph"
     )
   )
+Author: Brannigan Vogt [aut, cre]
+Maintainer: Brannigan Vogt <brannigan.t.vogt@employ.oregon.gov>
 Description: Download, read, and standardize Oregon Employment Department
     QualityInfo workbooks for use in analysis and reporting. The package
     provides web-first download and parsing functions for public use.

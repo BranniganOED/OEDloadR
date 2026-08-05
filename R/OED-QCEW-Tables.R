@@ -1,8 +1,9 @@
 # Quarterly Census of Employment and Wages (QCEW) download and parsing.
 #
-# The loader combines QualityInfo's geography/year services with the QCEW
-# report portlet, then preserves suppression markers and period metadata while
-# standardizing the returned workbook rows.
+# The loader uses bundled QualityInfo geography/year choices to construct QCEW
+# report-portlet requests, then preserves suppression markers and period
+# metadata while standardizing the returned workbook rows. Dynamic service
+# helpers remain only as maintenance diagnostics.
 
 qcew_or <- function(x, y) {
   if (is.null(x) || length(x) == 0) {
@@ -34,11 +35,7 @@ qcew_cell <- function(mat, row, col) {
 }
 
 qcew_is_xlsx <- function(path) {
-  if (!file.exists(path) || file.info(path)$size < 4) {
-    return(FALSE)
-  }
-
-  identical(readBin(path, what = "raw", n = 2), charToRaw("PK"))
+  oed_xlsx_valid(path)
 }
 
 qcew_parse_period <- function(period_line) {
@@ -327,7 +324,11 @@ qcew_read_sheet <- function(path, sheet, keep_raw_values = FALSE) {
 
   header_row <- qcew_find_header_row(raw_mat)
   if (is.na(header_row)) {
-    stop("Could not find a QCEW header row in ", path, " / ", sheet, call. = FALSE)
+    stop(
+      "Could not find a QCEW header row in ", path, " / ", sheet, ". ",
+      "The QualityInfo workbook layout may have changed; update OEDloadR.",
+      call. = FALSE
+    )
   }
 
   header <- raw_mat[header_row, ]
@@ -533,11 +534,20 @@ qcew_get_latest_year <- function(Periods = "Annual") {
 
 qcew_resolve_years <- function(Years, Periods = "Annual") {
   if (is.null(Years)) {
-    return(qcew_get_latest_year(Periods = Periods))
+    annual_requested <- any(
+      stringr::str_to_lower(as.character(Periods)) %in% c("annual", "00", "all")
+    )
+    if (annual_requested) {
+      prior_years <- oed_static_qcew_years()[
+        oed_static_qcew_years() < as.integer(format(Sys.Date(), "%Y"))
+      ]
+      if (length(prior_years) > 0) return(max(prior_years))
+    }
+    return(oed_static_qcew_latest_year())
   }
 
   if (length(Years) == 1 && stringr::str_to_lower(as.character(Years)) %in% c("all", "history", "timeseries", "time_series")) {
-    return(qcew_get_years())
+    return(oed_static_qcew_years())
   }
 
   years <- suppressWarnings(as.integer(Years))
@@ -622,7 +632,7 @@ qcew_get_geography_lookup <- function() {
 }
 
 qcew_select_geographies <- function(Geographies) {
-  geography_lookup <- qcew_get_geography_lookup()
+  geography_lookup <- oed_static_qcew_geographies()
 
   if (is.null(Geographies)) {
     return(geography_lookup)
@@ -648,13 +658,13 @@ qcew_select_geographies <- function(Geographies) {
   selected
 }
 
-# Return the current QualityInfo choices used by OED_QCEW_Table(). The
-# geography and year entries are fetched from QualityInfo so the helper also
-# reveals current releases and area codes to interactive users.
+# Return the bundled QualityInfo choices used by OED_QCEW_Table(). This helper
+# is deliberately offline; the values are updated when the package's
+# QualityInfo contract is updated.
 OED_QCEW_Options <- function() {
   list(
-    geographies = qcew_get_geography_lookup(),
-    years = qcew_get_years(),
+    geographies = oed_static_qcew_geographies(),
+    years = oed_static_qcew_years(),
     periods = qcew_period_lookup |>
       dplyr::distinct(.data$qcew_period_code, .data$qcew_period_label),
     ownerships = qcew_ownership_lookup |>
@@ -702,28 +712,15 @@ qcew_download_one <- function(geography_row,
                               industry_supersector,
                               industry_sector,
                               industry,
-                              cookie_file,
                               destination_path,
-                              Overwrite = FALSE) {
+                              Overwrite = FALSE,
+                              Refresh = "auto",
+                              MaxAge = NULL,
+                              RequestParameters = NULL,
+                              LatestAvailablePeriod = NULL) {
   dir.create(dirname(destination_path), recursive = TRUE, showWarnings = FALSE)
 
-  if (file.exists(destination_path) && !isTRUE(Overwrite)) {
-    if (!qcew_is_xlsx(destination_path)) {
-      stop(
-        "Existing file is not an xlsx workbook: ", destination_path,
-        ". Remove it or set Overwrite = TRUE.",
-        call. = FALSE
-      )
-    }
-
-    return(destination_path)
-  }
-
-  if (file.exists(destination_path)) {
-    unlink(destination_path)
-  }
-
-  request("https://www.qualityinfo.org/ewind") |>
+  req <- request("https://www.qualityinfo.org/ewind") |>
     req_url_query(
       p_p_id = "QiDatatoolQcew_INSTANCE_1dJUOCoo6aWa",
       p_p_lifecycle = 2,
@@ -750,22 +747,22 @@ qcew_download_one <- function(geography_row,
       Referer = "https://www.qualityinfo.org/ewind",
       Accept = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*"
     ) |>
-    req_user_agent("Mozilla/5.0") |>
-    req_options(
-      cookiejar = cookie_file,
-      cookiefile = cookie_file
-    ) |>
-    oed_request_perform(path = destination_path)
+    req_user_agent("Mozilla/5.0")
 
-  if (!qcew_is_xlsx(destination_path)) {
-    stop(
-      "QualityInfo did not return an xlsx workbook for ",
-      geography_row$geography, " ", year, " ", period$label, ".",
-      call. = FALSE
-    )
-  }
-
-  destination_path
+  oed_cache_download(
+    request = req,
+    destination_path = destination_path,
+    command = "OED_QCEW_Table",
+    dataset = "QCEW",
+    source_url = as.character(req$url),
+    request_parameters = RequestParameters,
+    Refresh = Refresh,
+    Overwrite = Overwrite,
+    MaxAge = MaxAge,
+    latest_available_period = LatestAvailablePeriod,
+    validator = qcew_is_xlsx,
+    DataUrl = "https://www.qualityinfo.org/ewind"
+  )
 }
 
 OED_QCEW_Table <- function(Year = NULL,
@@ -781,7 +778,7 @@ OED_QCEW_Table <- function(Year = NULL,
                            IndustrySuperSector = "0000",
                            IndustrySector = "00",
                            Industry = "0000",
-                           DownloadDir = file.path("output", "qualityinfo_qcew"),
+                           DownloadDir = NULL,
                            Overwrite = FALSE,
                            MaxRequests = 100,
                            PreviewOnly = FALSE,
@@ -789,8 +786,12 @@ OED_QCEW_Table <- function(Year = NULL,
                            KeepDownloadMetadata = FALSE,
                            Paths = NULL,
                            Sheets = NULL,
-                           keep_raw_values = FALSE) {
+                           keep_raw_values = FALSE,
+                           Refresh = c("auto", "always", "never"),
+                           MaxAge = NULL) {
   NAICSMatch <- match.arg(NAICSMatch)
+  Refresh <- oed_refresh_policy(Refresh, Overwrite = Overwrite)
+  DownloadDir <- oed_dataset_download_dir("QCEW", DownloadDir)
 
   if (!is.null(Paths)) {
     return(
@@ -841,11 +842,59 @@ OED_QCEW_Table <- function(Year = NULL,
     },
     character(1)
   )
-  request_plan$download_status <- ifelse(
-    file.exists(request_plan$destination_path) && !isTRUE(Overwrite),
-    "cached",
-    "downloaded"
+  request_plan$download_status <- "downloaded"
+  request_plan$refresh_reason <- NA_character_
+  request_plan$cache_age_days <- NA_real_
+  request_plan$cache_max_age_days <- NA_real_
+  request_plan$metadata_path <- vapply(
+    request_plan$destination_path,
+    oed_cache_sidecar_path,
+    character(1)
   )
+  latest_year <- max(years)
+  for (i in seq_len(nrow(request_plan))) {
+    geography_row <- geo_selected[request_plan$geo_id[i], ]
+    request_parameters <- list(
+      geography = geography_row$geography,
+      qcew_area = geography_row$qcew_area,
+      year = request_plan$year[i],
+      period = request_plan$qcew_period_label[i],
+      ownership = ownership$value,
+      report_type = report_type$value,
+      industry_level = industry_level$value,
+      industry_supersector = IndustrySuperSector,
+      industry_sector = IndustrySector,
+      industry = Industry
+    )
+    current_request <- identical(as.integer(request_plan$year[i]), as.integer(latest_year))
+    effective_max_age <- oed_cache_max_age(
+      "QCEW",
+      MaxAge = MaxAge,
+      current_request = current_request
+    )
+    decision <- oed_cache_decision(
+      path = request_plan$destination_path[i],
+      command = "OED_QCEW_Table",
+      dataset = "QCEW",
+      source_url = "https://www.qualityinfo.org/ewind",
+      request_parameters = request_parameters,
+      Refresh = Refresh,
+      Overwrite = Overwrite,
+      MaxAge = effective_max_age,
+      # A valid cache hit must not make a HEAD request. Server revision
+      # headers are still saved when the workbook itself is downloaded.
+      current_etag = NULL,
+      current_last_modified = NULL,
+      latest_available_period = if (current_request) as.character(latest_year) else NULL,
+      catalog_title = basename(request_plan$destination_path[i]),
+      validator = qcew_is_xlsx
+    )
+    request_plan$download_status[i] <- decision$status
+    request_plan$refresh_reason[i] <- decision$reason
+    request_plan$cache_age_days[i] <- decision$cache_age_days
+    request_plan$cache_max_age_days[i] <- decision$max_age_days
+    request_plan$metadata_path[i] <- decision$metadata_path
+  }
 
   if (isTRUE(PreviewOnly)) {
     return(request_plan |>
@@ -855,9 +904,10 @@ OED_QCEW_Table <- function(Year = NULL,
       ))
   }
 
-  if (is.finite(MaxRequests) && nrow(request_plan) > MaxRequests) {
+  planned_downloads <- sum(request_plan$download_status == "downloaded", na.rm = TRUE)
+  if (is.finite(MaxRequests) && planned_downloads > MaxRequests) {
     stop(
-      "This call would make ", nrow(request_plan), " QualityInfo Excel requests. ",
+      "This call would make ", planned_downloads, " QualityInfo Excel requests. ",
       "Narrow Years, Periods, Geographies, or set PreviewOnly = TRUE to inspect the request plan. ",
       "If the plan is intentional, raise MaxRequests.",
       call. = FALSE
@@ -871,16 +921,6 @@ OED_QCEW_Table <- function(Year = NULL,
     period = character(),
     reason = character()
   )
-
-  cookie_file <- tempfile(fileext = ".txt")
-
-  request("https://www.qualityinfo.org/ewind") |>
-    req_user_agent("Mozilla/5.0") |>
-    req_options(
-      cookiejar = cookie_file,
-      cookiefile = cookie_file
-    ) |>
-    oed_request_perform()
 
   all_data <- list()
   download_paths <- rep(NA_character_, nrow(request_plan))
@@ -896,40 +936,74 @@ OED_QCEW_Table <- function(Year = NULL,
 
     message("Processing: ", geography_row$geography, " | ", year, " ", period$label)
 
-    tf <- tryCatch(
-      qcew_download_one(
-        geography_row = geography_row,
-        year = year,
-        period = period,
-        ownership = ownership,
-        report_type = report_type,
-        industry_level = industry_level,
-        industry_supersector = IndustrySuperSector,
-        industry_sector = IndustrySector,
-        industry = Industry,
-        cookie_file = cookie_file,
-        destination_path = plan_row$destination_path,
-        Overwrite = Overwrite
-      ),
-      error = function(e) {
-        failed_requests <<- bind_rows(
-          failed_requests,
-          tibble::tibble(
+    tf <- NULL
+    if (identical(plan_row$download_status, "cached")) {
+      tf <- plan_row$destination_path
+    } else if (identical(plan_row$download_status, "downloaded")) {
+      planned_reason <- plan_row$refresh_reason
+      tf <- tryCatch(
+        qcew_download_one(
+          geography_row = geography_row,
+          year = year,
+          period = period,
+          ownership = ownership,
+          report_type = report_type,
+          industry_level = industry_level,
+          industry_supersector = IndustrySuperSector,
+          industry_sector = IndustrySector,
+          industry = Industry,
+          destination_path = plan_row$destination_path,
+          Overwrite = Overwrite,
+          # The planning pass already decided that this workbook needs a
+          # download, so do not repeat a freshness check before replacing it.
+          Refresh = "always",
+          MaxAge = plan_row$cache_max_age_days,
+          RequestParameters = list(
             geography = geography_row$geography,
             qcew_area = geography_row$qcew_area,
             year = year,
             period = period$label,
-            reason = conditionMessage(e)
+            ownership = ownership$value,
+            report_type = report_type$value,
+            industry_level = industry_level$value,
+            industry_supersector = IndustrySuperSector,
+            industry_sector = IndustrySector,
+            industry = Industry
+          ),
+          LatestAvailablePeriod = as.character(latest_year)
+        ),
+        error = function(e) {
+          failed_requests <<- bind_rows(
+            failed_requests,
+            tibble::tibble(
+              geography = geography_row$geography,
+              qcew_area = geography_row$qcew_area,
+              year = year,
+              period = period$label,
+              reason = conditionMessage(e)
+            )
           )
-        )
-        NULL
-      }
-    )
+          NULL
+        }
+      )
+    }
 
     if (is.null(tf)) {
+      request_plan$download_status[i] <- "failed"
       next
     }
 
+    if (is.list(tf)) {
+      request_plan$download_status[i] <- tf$status
+      request_plan$refresh_reason[i] <- if (tf$status %in% c("downloaded", "refreshed")) {
+        planned_reason
+      } else {
+        tf$reason
+      }
+      request_plan$cache_age_days[i] <- tf$cache_age_days
+      request_plan$metadata_path[i] <- tf$metadata_path
+      tf <- tf$path
+    }
     download_paths[i] <- tf
 
     result <- tryCatch(

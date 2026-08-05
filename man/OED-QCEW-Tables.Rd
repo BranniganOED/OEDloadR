@@ -24,7 +24,7 @@ OED_QCEW_Table(
   IndustrySuperSector = "0000",
   IndustrySector = "00",
   Industry = "0000",
-  DownloadDir = file.path("output", "qualityinfo_qcew"),
+  DownloadDir = NULL,
   Overwrite = FALSE,
   MaxRequests = 100,
   PreviewOnly = FALSE,
@@ -32,7 +32,9 @@ OED_QCEW_Table(
   KeepDownloadMetadata = FALSE,
   Paths = NULL,
   Sheets = NULL,
-  keep_raw_values = FALSE
+  keep_raw_values = FALSE,
+  Refresh = c("auto", "always", "never"),
+  MaxAge = NULL
 )
 }
 \arguments{
@@ -55,9 +57,15 @@ total.}
 \item{IndustrySuperSector}{QCEW supersector code.}
 \item{IndustrySector}{QCEW sector code.}
 \item{Industry}{QCEW industry code.}
-\item{DownloadDir}{Directory used for downloaded QCEW workbooks. Existing
-valid workbooks are reused by default.}
+\item{DownloadDir}{Directory used for downloaded QCEW workbooks. When
+omitted, the shared \code{OEDloadR data/QCEW} folder is used.}
 \item{Overwrite}{Whether existing QCEW workbooks should be downloaded again.}
+\item{Refresh}{Cache policy: \code{"auto"} uses seven days for the latest
+available QCEW period and 90 days for older fixed periods; \code{"always"}
+downloads a fresh workbook; and \code{"never"} reuses a valid local workbook.
+\code{Overwrite = TRUE} is retained as an alias for \code{Refresh = "always"}.}
+\item{MaxAge}{Optional maximum cache age in days that overrides the automatic
+QCEW rule.}
 \item{MaxRequests}{Maximum number of QualityInfo requests allowed.}
 \item{PreviewOnly}{Return a request plan without downloading workbooks.}
 \item{ReportNAICSAvailability}{Whether to report requested NAICS availability.}
@@ -71,6 +79,20 @@ omitted, the function uses the QualityInfo web source.}
 A standardized data frame. Download results carry \code{download_plan} and
 \code{download_diagnostics} attributes and may also include
 \code{"failed_requests"} and \code{"naics_availability"} attributes.
+}
+\details{
+The standard request uses bundled QualityInfo geography and year metadata and
+does not load the QCEW webpage or lookup services before downloading a report.
+QCEW still uses one report request per requested geography/year/period because
+the selected-area report endpoint does not provide a suitable bulk replacement.
+
+When \code{DownloadDir} is omitted, QCEW workbooks are stored in the shared
+\code{OEDloadR data/QCEW} folder. The root defaults to
+\code{file.path(getwd(), "OEDloadR data")} and can be overridden with
+\code{options(OEDloadR.data_dir = "D:/custom/path")} or the
+\code{OEDLOADR_DATA_DIR} environment variable. Downloaded workbooks have a
+JSON metadata sidecar. Automatic refresh uses the current QualityInfo period
+and age rules; server revision headers are used when the source provides them.
 }
 \examples{
 \dontrun{
