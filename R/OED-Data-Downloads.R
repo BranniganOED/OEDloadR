@@ -692,14 +692,66 @@ data_download_one <- function(download_url,
 
 # Generic workbook cleaning starts by locating the first dense header area.
 # Specialized loaders use stricter schema-aware header detection.
-data_find_header_row <- function(raw_mat) {
+data_find_header_row <- function(raw_mat, meta = NULL) {
   if (nrow(raw_mat) == 0 || ncol(raw_mat) == 0) {
     return(1L)
   }
 
+  category_key <- NA_character_
+
+  if (
+    !is.null(meta) &&
+    nrow(meta) > 0 &&
+    "category_key" %in% names(meta)
+  ) {
+    category_key <- as.character(meta$category_key[[1]])
+  }
+
+  # Industry-projection workbooks generally have:
+  # [blank] | base year | projection year | Change | % Change
+  if (identical(category_key, "industry_projections")) {
+    for (row_id in seq_len(nrow(raw_mat))) {
+      values <- stringr::str_squish(
+        as.character(raw_mat[row_id, ])
+      )
+
+      values[is.na(values)] <- ""
+      values_lower <- stringr::str_to_lower(values)
+
+      year_count <- sum(
+        stringr::str_detect(
+          values_lower,
+          "^(19|20)\\d{2}$"
+        )
+      )
+
+      has_change <- any(values_lower == "change")
+
+      has_percent_change <- any(
+        stringr::str_detect(
+          values_lower,
+          "^%\\s*change$|^percent\\s+change$"
+        )
+      )
+
+      if (
+        year_count >= 2L &&
+        has_change &&
+        has_percent_change
+      ) {
+        return(row_id)
+      }
+    }
+  }
+
+  # Generic fallback for other OED_Data workbooks.
   non_empty <- apply(raw_mat, 1, function(row) {
-    sum(!is.na(row) & nzchar(stringr::str_squish(row)))
+    sum(
+      !is.na(row) &
+        nzchar(stringr::str_squish(row))
+    )
   })
+
   candidates <- which(non_empty >= 2)
 
   if (length(candidates) == 0) {
@@ -713,7 +765,10 @@ data_find_header_row <- function(raw_mat) {
       0
     }
   }, numeric(1))
-  score <- non_empty[candidates] + lookahead - (candidates * 0.01)
+
+  score <- non_empty[candidates] +
+    lookahead -
+    (candidates * 0.01)
 
   candidates[which.max(score)]
 }
@@ -839,7 +894,10 @@ data_read_sheet <- function(path, sheet, Clean = TRUE, meta = NULL) {
     return(data_add_metadata(data, path, sheet, meta))
   }
 
-  header_row <- data_find_header_row(raw_mat)
+  header_row <- data_find_header_row(
+  raw_mat,
+  meta = meta
+)
   active_cols <- which(apply(raw_mat, 2, function(col) {
     any(!is.na(col) & nzchar(stringr::str_squish(col)))
   }))
@@ -851,6 +909,20 @@ data_read_sheet <- function(path, sheet, Clean = TRUE, meta = NULL) {
 
   last_col <- max(active_cols)
   header <- raw_mat[header_row, seq_len(last_col)]
+  category_key <- data_meta_value(
+  meta,
+  "category_key"
+)
+
+if (
+  identical(category_key, "industry_projections") &&
+  (
+    is.na(header[1]) ||
+    !nzchar(stringr::str_squish(header[1]))
+  )
+) {
+  header[1] <- "Industry"
+}
 
   data_mat <- if (header_row >= nrow(raw_mat)) {
     matrix(character(), nrow = 0, ncol = last_col)
